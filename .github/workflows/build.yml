@@ -1,0 +1,181 @@
+name: Build BE9300 / BE550 v1 OpenWrt (PR #25470 + TP-Link-signed 5/6 GHz firmware)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+env:
+  OPENWRT_REPO: https://github.com/openwrt/openwrt.git
+  # openwrt PR #25470 "qualcommbe: add support for TP-Link Archer BE550 v1"
+  # (trickpattyFH20), head as of 2026-10-04 -- built exactly as its author tested it
+  OPENWRT_REF: refs/pull/25470/head
+  OPENWRT_SHA: 5ca368199150a1b18d206ba0a5f7ebf3d9351fb4
+  # TP-Link-signed QCN92xx/QCN6274 firmware container (AMSS, dual-MAC AMSS, M3)
+  # published for the Archer BE800 port (openwrt PR #20373); PR #25470's author
+  # reports it runs on the BE550. Fetched at build time, not stored in this repo.
+  FW_REPO: https://github.com/sidhantgoel/firmware_qca-wireless.git
+  FW_SHA: c7b7a979b30e9fbaf2c41b4ad96a4c4d67846927
+  FW_FILE: firmware-tplink_archer-be800.qcn9274
+  FW_MD5: 7575482364b37aa544af98a0f3293a46
+  # IPQ9574 integrated-radio (2.4 GHz) Q6/M3 firmware: PR #25470 loads
+  # ath11k/IPQ9574/hw1.0/{q6,m3}_fw.mdt but ships no package for it.
+  # Same source and version openwrt main's ath11k-firmware-ipq9574 uses.
+  # Argon LuCI theme (jerrykuku), built from source: theme v2.4.8 and the
+  # config app release that v2.4.8 ships with.
+  ARGON_THEME_SHA: 9f5d1e79e67623f4006a86471116b6745ea845f7
+  ARGON_CONFIG_SHA: 9bafffa885135fc78fb4c0106196f98d91d4dae7
+  WIFI_FW_REPO: https://github.com/quic/upstream-wifi-fw.git
+  WIFI_FW_SHA: 795809c7041582bd51bdfaa1f548b916ae8d4382
+  WIFI_FW_DIR: ath11k-firmware/IPQ9574/hw1.0/2.9.0.1/WLAN.HK.2.9.0.1-01890-QCAHKSWPL_SILICONZ-1
+  Q6_SHA256: 75b0e3ae0a84274af0ff4eae5f4f6701e86f075ce8d14cf815a3ef726e8ecc8c
+  M3_SHA256: 93a643ee86abbede19c13444a2bb5acaf6a9f7175b17185e73eb96cab754bdd5
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget zstd
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch OpenWrt PR #25470 at pinned commit
+        run: |
+          git init openwrt
+          cd openwrt
+          git remote add origin "$OPENWRT_REPO"
+          git fetch --depth 1 origin "$OPENWRT_SHA" || git fetch --depth 50 origin "$OPENWRT_REF"
+          git checkout -q "$OPENWRT_SHA"
+          git log -1 --format='%H %s'
+
+      - name: Add retail "Archer BE9300 v1.0" (US) to the web-UI support list
+        run: |
+          # BE9300-branded units report product_name "Archer BE9300"; the stock
+          # updater rejects images whose SupportList lacks the unit's identity.
+          python3 be9300-supportlist.py openwrt/target/linux/qualcommbe/image/ipq95xx.mk
+
+      - name: Apply BE9300 Wi-Fi fixes (split-PHY DT + ath12k 108/109)
+        run: python3 be9300-fixes.py openwrt
+
+      - name: Fetch IPQ9574 2.4 GHz Q6/M3 firmware
+        run: |
+          git init wififw && cd wififw
+          git fetch --depth 1 --filter=blob:none "$WIFI_FW_REPO" "$WIFI_FW_SHA"
+          git sparse-checkout set --no-cone "$WIFI_FW_DIR/"
+          git checkout -q FETCH_HEAD
+          echo "$Q6_SHA256  $WIFI_FW_DIR/q6_fw.mdt" | sha256sum -c -
+          echo "$M3_SHA256  $WIFI_FW_DIR/m3_fw.mdt" | sha256sum -c -
+          D=../openwrt/files/lib/firmware/ath11k/IPQ9574/hw1.0
+          mkdir -p $D
+          cp "$WIFI_FW_DIR"/q6_fw.* "$WIFI_FW_DIR"/m3_fw.* $D/
+          ls -la $D
+
+      - name: Fetch TP-Link-signed ath12k firmware
+        run: |
+          git init fw && cd fw
+          git fetch --depth 1 "$FW_REPO" "$FW_SHA"
+          git checkout -q FETCH_HEAD
+          echo "$FW_MD5  $FW_FILE" | md5sum -c -
+          mkdir -p ../openwrt/files/lib/firmware/ath12k/QCN9274/hw2.0
+          # firmware-2.bin is loaded in preference to amss.bin/m3.bin and
+          # overrides the linux-firmware copy the chip rejects
+          cp "$FW_FILE" ../openwrt/files/lib/firmware/ath12k/QCN9274/hw2.0/firmware-2.bin
+
+      - name: Add Argon LuCI theme
+        run: |
+          for p in "luci-theme-argon $ARGON_THEME_SHA" "luci-app-argon-config $ARGON_CONFIG_SHA"; do
+            set -- $p
+            git init -q "openwrt/package/argon/$1"
+            git -C "openwrt/package/argon/$1" fetch -q --depth 1 "https://github.com/jerrykuku/$1.git" "$2"
+            git -C "openwrt/package/argon/$1" checkout -q FETCH_HEAD
+            rm -rf "openwrt/package/argon/$1/.git"
+            grep -E '^(PKG_VERSION|PKG_RELEASE)' "openwrt/package/argon/$1/Makefile" || true
+          done
+
+      - name: Feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure
+        run: |
+          cd openwrt
+          cp ../be9300.diffconfig .config
+          make defconfig
+          grep -q '^CONFIG_TARGET_qualcommbe_ipq95xx_DEVICE_tplink_archer-be550-v1=y' .config
+          grep -q '^CONFIG_PACKAGE_kmod-ath11k-ahb=y' .config
+          grep -q '^CONFIG_PACKAGE_kmod-ath12k=y' .config
+          grep -q '^CONFIG_PACKAGE_ipq-wifi-tplink_archer-be550-v1=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-theme-argon=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-argon-config=y' .config
+          for p in nlbwmon luci-app-nlbwmon kmod-nf-conntrack-netlink adblock luci-app-adblock \
+                   iperf3 tplink-ledbar wpad-mbedtls kmod-wireguard luci-app-sqm kmod-sched-cake \
+                   kmod-tun kmod-usb-storage block-mount; do
+            grep -q "^CONFIG_PACKAGE_$p=y" .config || { echo "missing $p"; exit 1; }
+          done
+          grep -q '^CONFIG_ALL_KMODS=y' .config
+          ./scripts/diffconfig.sh > ../final.diffconfig
+          cat ../final.diffconfig
+
+      - name: Download sources
+        run: |
+          cd openwrt
+          make download -j8 || make download -j1 V=s
+
+      - name: Build
+        run: |
+          cd openwrt
+          # optional =m kmods (ALL_KMODS) must not fail the image build
+          make -j$(($(nproc)+1)) IGNORE_ERRORS=m || make -j1 V=s IGNORE_ERRORS=m
+
+      - name: Verify image contents
+        run: |
+          cd openwrt
+          R=$(ls -d build_dir/target-*/root-qualcommbe* | head -1)
+          ls -la $R/lib/firmware/ath12k/QCN9274/hw2.0/ $R/lib/firmware/ath11k/IPQ9574/hw1.0/ || true
+          md5sum $R/lib/firmware/ath12k/QCN9274/hw2.0/firmware-2.bin
+          echo "$FW_MD5  $(ls $R/lib/firmware/ath12k/QCN9274/hw2.0/firmware-2.bin)" | md5sum -c -
+          echo "$Q6_SHA256  $(ls $R/lib/firmware/ath11k/IPQ9574/hw1.0/q6_fw.mdt)" | sha256sum -c -
+          test -f $R/lib/firmware/ath11k/IPQ9574/hw1.0/q6_fw.b13
+          test -x $R/usr/sbin/nlbwmon
+          test -n "$(find $R/lib/modules -name 'nf_conntrack_netlink.ko')"
+          test -n "$(find $R/lib/modules -name 'wireguard.ko')"
+          DTB=$(find build_dir/target-*/linux-qualcommbe_ipq95xx -name '*archer-be550-v1*.dtb' | head -1)
+          echo "DTB: $DTB"
+          grep -q 'qcom,split-phy' "$DTB"
+          ATH12K=$(find $R/lib/modules -name 'ath12k*.ko' | head -1)
+          grep -q 'qcom,split-phy' "$(dirname "$ATH12K")"/ath12k*.ko
+          echo "split-PHY present in DTB and ath12k driver"
+
+      - name: Collect images
+        if: always()
+        run: |
+          mkdir -p out
+          cp -a openwrt/bin/targets/qualcommbe/ipq95xx/* out/ 2>/dev/null || true
+          cp final.diffconfig out/ 2>/dev/null || true
+          (cd out && sha256sum *.bin *.itb > sha256sums-images.txt 2>/dev/null || true)
+          ls -la out
+          du -sh out/packages 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: be9300-openwrt
+          path: out/
+          if-no-files-found: warn

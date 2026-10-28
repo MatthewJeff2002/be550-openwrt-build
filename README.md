@@ -1,0 +1,112 @@
+# Archer BE550 v1 OpenWrt build (with nlbwmon and matching kernel modules)
+
+Based on [ChibiButo/ChibiButo-be9300-openwrt](https://github.com/ChibiButo/ChibiButo-be9300-openwrt) release r2 (`314ed6c`):
+OpenWrt PR #25470, TP-Link-signed 5/6 GHz firmware, and the split-PHY DT + ath12k 108/109 fixes.
+
+Added on top:
+- nlbwmon + luci-app-nlbwmon (with kmod-nf-conntrack-netlink)
+- adblock, iperf3, tplink-ledbar built in
+- full wpad-mbedtls (WPA3, 802.11r/k/v, MLO-capable hostapd)
+- WireGuard, kmod-tun, SQM (cake), USB storage (exFAT/NTFS3/VFAT)
+- `CONFIG_ALL_KMODS=y`: every kernel module is built as a package matching this kernel (see the `packages/` folder in the build artifact)
+- the build fails unless `qcom,split-phy` is present in both the BE550 DTB and the ath12k driver
+
+---
+
+# OpenWrt for TP-Link Archer BE9300 v1 (= Archer BE550 v1)
+
+This repo builds **OpenWrt PR [#25470](https://github.com/openwrt/openwrt/pull/25470)**
+(trickpattyFH20, on top of Alexandru Gagniuc's BE550 work), pinned to commit
+`5ca36819` exactly as its author tested it. One thing is added: the **TP-Link-signed
+5/6 GHz firmware** the PR says has to be supplied out of tree.
+
+Status: the PR's author reports everything working on stock **1.2.4**: all five
+2.5G ports, all three Wi-Fi bands, NAND, USB, the LED bar, buttons, and dual-slot
+sysupgrade. This repo's particular combination has **not been tested on hardware
+yet**. The PR is an unmerged draft.
+
+## Download
+
+**[Release be550-v1-pr25470-r1](https://github.com/ChibiButo/ChibiButo-be9300-openwrt/releases/tag/be550-v1-pr25470-r1)**
+(build run 39694362615). For the web-UI install, use
+`openwrt-qualcommbe-ipq95xx-tplink_archer-be550-v1-squashfs-web-ui-factory.bin`,
+which is 16,650,981 bytes with SHA-256
+`e41c91653b1bd846f68ccb2fa06f6fa39cff0f935d298bffdfc8a35b12bedf61`.
+
+Pre-flash checks on that file: the tplink2023 header size and MD5 are valid, the
+support list has all 9 regions including US `55530000`, and the UBI payload has
+128 KiB PEBs, 2 KiB pages, and `kernel` (vol 0) + `rootfs` (vol 1) volumes in
+127 PEBs (about 16.6 MB, which fits the 48 MB slot).
+
+## What gets built (Actions artifact `be9300-openwrt`)
+
+| File | Use |
+|---|---|
+| `*-squashfs-web-ui-factory.bin` | Install from the **stock TP-Link web UI**. No serial needed |
+| `*-initramfs-uImage.itb` | RAM-boot over serial/TFTP (test without writing flash) |
+| `*-squashfs-sysupgrade.bin` | Upgrades once OpenWrt is installed |
+
+### The added firmware
+The 5/6 GHz chip (QCN6274 per the PR; the GPL names it QCN9224) rejects the stock
+linux-firmware image (`BHI error 0xef0a0002`) because it only accepts TP-Link-signed
+firmware. The build fetches the TP-Link-signed container published for the
+Archer BE800 port ([#20373](https://github.com/openwrt/openwrt/pull/20373)) from
+`sidhantgoel/firmware_qca-wireless` @ `c7b7a97`. It checks the MD5
+(`75754823…`) and installs it as `/lib/firmware/ath12k/QCN9274/hw2.0/firmware-2.bin`.
+The container holds AMSS, dual-MAC AMSS (the mode one radio needs to serve both 5 and
+6 GHz) and M3 images. The blob is fetched at build time and isn't stored in this repo.
+
+Board data for both radios comes from upstream `firmware_qca-wireless`
+(`ipq-wifi-tplink_archer-be550-v1`).
+
+## BE9300-branded units (retail "Archer BE9300 v1.0")
+
+Units sold as **Archer BE9300** report `product_name:Archer BE9300`, so the stock
+updater rejects the PR's factory image ("upload error"). The PR only lists
+`Archer BE550`. This repo's build adds
+`{product_name:Archer BE9300,product_ver:1.0.0,special_id:55530000}` (US) to the
+support list (`be9300-supportlist.py`). The payload is unchanged.
+
+## Install option A: web UI (no serial), as tested by the PR author
+
+1. Make sure you can get back to stock: download the official 1.2.4 firmware from
+   TP-Link, and know how to reach recovery mode (hold reset while powering on, then
+   browse to http://192.168.0.1).
+2. Stock UI → **Advanced → System → Firmware Update** → upload
+   `…-squashfs-web-ui-factory.bin` → Upgrade.
+3. The stock firmware writes OpenWrt to its **inactive** slot and reboots. OpenWrt
+   comes up at **http://192.168.1.1** (LuCI; set a root password first).
+4. Enable Wi-Fi under Network → Wireless. Radios are off by default.
+
+Safety nets: the stock image stays in the other slot. If the selected slot fails to
+load, TP-Link's U-Boot tries the other one, and the reset-button recovery page
+accepts an official signed image.
+**Note:** your *first* sysupgrade from inside OpenWrt writes over the slot that
+held stock. After that, recovery means the TP-Link recovery page (or serial).
+
+## Install option B: serial RAM-boot first (most cautious)
+
+UART is header **JP1**, 3.3 V, 115200 8N1. **Do not connect VCC.**
+1. Stop autoboot (press any key within 1 s) → `IPQ9574#`
+2. Run `is_sec_boot_enabled` and note the output.
+3. Then:
+   ```
+   setenv ipaddr 192.168.1.1
+   setenv serverip 192.168.1.2
+   tftpboot 0x50000000 openwrt-qualcommbe-ipq95xx-tplink_archer-be550-v1-initramfs-uImage.itb
+   bootm 0x50000000
+   ```
+   Nothing is written to flash, so a power-cycle returns to stock.
+4. If everything works and you want to keep it, run `sysupgrade -n …-squashfs-sysupgrade.bin`
+   from the RAM-booted system.
+
+To revert from serial: `setenv tp_boot_idx; saveenv; reset` selects the other slot.
+
+## What to report back
+`dmesg`, `logread | grep -i -E 'ath11k|ath12k|wcss|qca8084'`, `iw dev`, `lspci`,
+`cat /proc/mtd`, and which bands and ports work.
+
+## Credits
+Patrick Lawler / trickpattyFH20 (PR #25470), Alexandru Gagniuc (mrnuke; BE550 port,
+IPQ9574 WCSS/ath11k), Sidhant Goel (BE800 port + firmware container), Satoshi
+Ikeuchi, and the OpenWrt qualcommbe maintainers.
