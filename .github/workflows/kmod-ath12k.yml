@@ -80,9 +80,13 @@ jobs:
           echo "router vermagic: $ROUTER_VERMAGIC"
           mkdir -p ../out
           echo "$VM" > ../out/vermagic.txt
-          B=$(ls -d build_dir/target-*/linux-qualcommbe_ipq95xx/backports-* | head -1)
-          cp $B/drivers/net/wireless/ath/ath12k/ath12k.ko ../out/
-          cp $B/drivers/net/wireless/ath/ath12k/wifi7/ath12k_wifi7.ko ../out/ 2>/dev/null || find $B -name 'ath12k_wifi7.ko' -exec cp {} ../out/ \;
+          echo "== where the modules are"
+          find build_dir staging_dir -name 'ath12k*.ko' 2>/dev/null
+          M=$(find build_dir -name ath12k.ko -path '*drivers/net/wireless/ath/ath12k/*' | head -1)
+          W=$(find build_dir -name ath12k_wifi7.ko -path '*drivers/net/wireless/ath/ath12k/*' | head -1)
+          test -n "$M" && test -n "$W"
+          cp "$M" "$W" ../out/
+          find bin -name 'kmod-ath12k*' -exec cp {} ../out/ \; 2>/dev/null || true
           cd ../out
           for m in *.ko; do echo "== $m"; strings $m | grep -E '^vermagic=|^parm=force_dualmac|^name='; done
           strings ath12k.ko | grep -q 'parm=force_dualmac'

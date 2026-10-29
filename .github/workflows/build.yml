@@ -6,6 +6,8 @@ on:
     paths-ignore:
       - 'README.md'
       - '.github/workflows/release.yml'
+      - '.github/workflows/kmod-ath12k.yml'
+      - 'router-match.diffconfig'
   workflow_dispatch:
 
 env:
