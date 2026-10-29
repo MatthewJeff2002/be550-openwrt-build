@@ -1,0 +1,32 @@
+From: OpenWrt BE550 build <noreply@users.noreply.github.com>
+Subject: [PATCH] wifi: ath12k: add force_dualmac module parameter
+
+Let a QCN9274 hw2.0 whose OTP board id is blank be treated as split-PHY
+(dual-MAC) without a device-tree change, e.g. "insmod ath12k.ko
+force_dualmac=1". Patch 109 handles the device-tree path; this covers
+images whose DTS lacks qcom,split-phy.
+---
+--- a/drivers/net/wireless/ath/ath12k/mhi.c
++++ b/drivers/net/wireless/ath/ath12k/mhi.c
+@@ -8,6 +8,11 @@
+ #include <linux/pci.h>
+ #include <linux/property.h>
+ #include <linux/firmware.h>
++#include <linux/moduleparam.h>
++
++static bool ath12k_force_dualmac;
++module_param_named(force_dualmac, ath12k_force_dualmac, bool, 0444);
++MODULE_PARM_DESC(force_dualmac, "Treat a QCN9274 hw2.0 with a blank OTP board id as split-PHY (dual-MAC)");
+ 
+ #include "core.h"
+ #include "debug.h"
+@@ -211,7 +216,8 @@
+ 
+ 		if (!board_id || (board_id == OTP_INVALID_BOARD_ID)) {
+ 			dualmac = ab->hw_rev == ATH12K_HW_QCN9274_HW20 &&
+-				  device_property_read_bool(ab->dev, "qcom,split-phy");
++				  (ath12k_force_dualmac ||
++				   device_property_read_bool(ab->dev, "qcom,split-phy"));
+ 			ath12k_dbg(ab, ATH12K_DBG_BOOT,
+ 				   "invalid OTP, selecting %s-mac\n",
+ 				   dualmac ? "dual" : "single");

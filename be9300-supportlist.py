@@ -8,7 +8,9 @@ s = open(path).read()
 if "product_name:Archer BE9300" in s:
     print("already present"); sys.exit(0)
 if s.count(anchor) != 1:
-    sys.exit("anchor not found exactly once")
+    # Only the web-UI factory image uses this list; sysupgrade images are unaffected.
+    print("WARNING: SupportList anchor not found; factory image keeps the upstream list")
+    sys.exit(0)
 s = s.replace(anchor, anchor + entry)
 open(path, "w").write(s)
 print("added BE9300 entry")

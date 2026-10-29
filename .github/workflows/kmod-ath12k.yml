@@ -1,0 +1,96 @@
+name: Build ath12k driver only (hot-swap on a running BE550)
+
+# Builds just the ath12k modules for the exact OpenWrt revision a router is
+# already running, with patch 110 (force_dualmac), so 5/6 GHz split-PHY can be
+# enabled by reloading the driver -- no reflash and no reboot. The kernel
+# vermagic hash must match the router's, otherwise the modules are not safe.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kmod-ath12k.yml'
+      - 'router-match.diffconfig'
+      - 'patches/mac80211-ath12k/110-*.patch'
+
+env:
+  OPENWRT_REPO: https://github.com/openwrt/openwrt.git
+  OPENWRT_SHA: 5dbd340d123552d245d068c198b0c369758fc340
+  # kernel=6.18.55~<hash> from the router's /etc/apk/world
+  ROUTER_VERMAGIC: 3b5b3d18a1e30df089238e078a1c8d89
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget zstd
+
+      - uses: actions/checkout@v4
+
+      - name: Fetch OpenWrt at the router's revision
+        run: |
+          git init openwrt && cd openwrt
+          git remote add origin "$OPENWRT_REPO"
+          git fetch --depth 1 origin "$OPENWRT_SHA"
+          git checkout -q "$OPENWRT_SHA"
+          git log -1 --format='%H %s'
+
+      - name: Add patch 110 (force_dualmac)
+        run: |
+          D=openwrt/package/kernel/mac80211/patches/ath12k
+          ls $D
+          test -f $D/109-wifi-ath12k-read-split-PHY-topology-when-OTP-is-unset.patch
+          cp patches/mac80211-ath12k/110-*.patch $D/
+
+      - name: Feeds and config (router's installed packages, no extras)
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cp ../router-match.diffconfig .config
+          make defconfig
+          grep -q '^CONFIG_PACKAGE_kmod-ath12k=y' .config
+
+      - name: Build toolchain, kernel and mac80211
+        run: |
+          cd openwrt
+          make download -j8 || make download -j1 V=s
+          make -j$(($(nproc)+1)) tools/install toolchain/install || make -j1 V=s tools/install toolchain/install
+          make -j$(($(nproc)+1)) target/linux/compile || make -j1 V=s target/linux/compile
+          make -j$(($(nproc)+1)) package/kernel/mac80211/compile || make -j1 V=s package/kernel/mac80211/compile
+
+      - name: Check kernel fingerprint and collect modules
+        run: |
+          cd openwrt
+          LD=$(ls -d build_dir/target-*/linux-qualcommbe_ipq95xx/linux-* | head -1)
+          VM=$(cat build_dir/target-*/linux-qualcommbe_ipq95xx/linux-*/.vermagic 2>/dev/null || cat $LD/.vermagic)
+          echo "built vermagic:  $VM"
+          echo "router vermagic: $ROUTER_VERMAGIC"
+          mkdir -p ../out
+          echo "$VM" > ../out/vermagic.txt
+          B=$(ls -d build_dir/target-*/linux-qualcommbe_ipq95xx/backports-* | head -1)
+          cp $B/drivers/net/wireless/ath/ath12k/ath12k.ko ../out/
+          cp $B/drivers/net/wireless/ath/ath12k/wifi7/ath12k_wifi7.ko ../out/ 2>/dev/null || find $B -name 'ath12k_wifi7.ko' -exec cp {} ../out/ \;
+          cd ../out
+          for m in *.ko; do echo "== $m"; strings $m | grep -E '^vermagic=|^parm=force_dualmac|^name='; done
+          strings ath12k.ko | grep -q 'parm=force_dualmac'
+          sha256sum *.ko > sha256sums.txt
+          if [ "$VM" = "$ROUTER_VERMAGIC" ]; then echo MATCH > match.txt; else echo "MISMATCH $VM" > match.txt; fi
+          cat match.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ath12k-hotswap
+          path: out/

@@ -11,9 +11,10 @@ on:
 env:
   OPENWRT_REPO: https://github.com/openwrt/openwrt.git
   # openwrt PR #25470 "qualcommbe: add support for TP-Link Archer BE550 v1"
-  # (trickpattyFH20), head as of 2026-10-04 -- built exactly as its author tested it
+  # (trickpattyFH20) at 2026-10-22 -- the revision whose 2.4 GHz works on hardware;
+  # it already carries ath12k 108/109, so only the split-PHY DT line is added
   OPENWRT_REF: refs/pull/25470/head
-  OPENWRT_SHA: 5ca368199150a1b18d206ba0a5f7ebf3d9351fb4
+  OPENWRT_SHA: 5dbd340d123552d245d068c198b0c369758fc340
   # TP-Link-signed QCN92xx/QCN6274 firmware container (AMSS, dual-MAC AMSS, M3)
   # published for the Archer BE800 port (openwrt PR #20373); PR #25470's author
   # reports it runs on the BE550. Fetched at build time, not stored in this repo.
@@ -21,18 +22,10 @@ env:
   FW_SHA: c7b7a979b30e9fbaf2c41b4ad96a4c4d67846927
   FW_FILE: firmware-tplink_archer-be800.qcn9274
   FW_MD5: 7575482364b37aa544af98a0f3293a46
-  # IPQ9574 integrated-radio (2.4 GHz) Q6/M3 firmware: PR #25470 loads
-  # ath11k/IPQ9574/hw1.0/{q6,m3}_fw.mdt but ships no package for it.
-  # Same source and version openwrt main's ath11k-firmware-ipq9574 uses.
   # Argon LuCI theme (jerrykuku), built from source: theme v2.4.8 and the
   # config app release that v2.4.8 ships with.
   ARGON_THEME_SHA: 9f5d1e79e67623f4006a86471116b6745ea845f7
   ARGON_CONFIG_SHA: 9bafffa885135fc78fb4c0106196f98d91d4dae7
-  WIFI_FW_REPO: https://github.com/quic/upstream-wifi-fw.git
-  WIFI_FW_SHA: 795809c7041582bd51bdfaa1f548b916ae8d4382
-  WIFI_FW_DIR: ath11k-firmware/IPQ9574/hw1.0/2.9.0.1/WLAN.HK.2.9.0.1-01890-QCAHKSWPL_SILICONZ-1
-  Q6_SHA256: 75b0e3ae0a84274af0ff4eae5f4f6701e86f075ce8d14cf815a3ef726e8ecc8c
-  M3_SHA256: 93a643ee86abbede19c13444a2bb5acaf6a9f7175b17185e73eb96cab754bdd5
 
 jobs:
   build:
@@ -72,19 +65,6 @@ jobs:
       - name: Apply BE9300 Wi-Fi fixes (split-PHY DT + ath12k 108/109)
         run: python3 be9300-fixes.py openwrt
 
-      - name: Fetch IPQ9574 2.4 GHz Q6/M3 firmware
-        run: |
-          git init wififw && cd wififw
-          git fetch --depth 1 --filter=blob:none "$WIFI_FW_REPO" "$WIFI_FW_SHA"
-          git sparse-checkout set --no-cone "$WIFI_FW_DIR/"
-          git checkout -q FETCH_HEAD
-          echo "$Q6_SHA256  $WIFI_FW_DIR/q6_fw.mdt" | sha256sum -c -
-          echo "$M3_SHA256  $WIFI_FW_DIR/m3_fw.mdt" | sha256sum -c -
-          D=../openwrt/files/lib/firmware/ath11k/IPQ9574/hw1.0
-          mkdir -p $D
-          cp "$WIFI_FW_DIR"/q6_fw.* "$WIFI_FW_DIR"/m3_fw.* $D/
-          ls -la $D
-
       - name: Fetch TP-Link-signed ath12k firmware
         run: |
           git init fw && cd fw
@@ -120,12 +100,13 @@ jobs:
           make defconfig
           grep -q '^CONFIG_TARGET_qualcommbe_ipq95xx_DEVICE_tplink_archer-be550-v1=y' .config
           grep -q '^CONFIG_PACKAGE_kmod-ath11k-ahb=y' .config
+          grep -q '^CONFIG_PACKAGE_ath11k-firmware-ipq9574=y' .config
           grep -q '^CONFIG_PACKAGE_kmod-ath12k=y' .config
           grep -q '^CONFIG_PACKAGE_ipq-wifi-tplink_archer-be550-v1=y' .config
           grep -q '^CONFIG_PACKAGE_luci-theme-argon=y' .config
           grep -q '^CONFIG_PACKAGE_luci-app-argon-config=y' .config
           for p in nlbwmon luci-app-nlbwmon kmod-nf-conntrack-netlink adblock luci-app-adblock \
-                   iperf3 tplink-ledbar wpad-mbedtls kmod-wireguard luci-app-sqm kmod-sched-cake \
+                   iperf3 tplink-ledbar wpad-basic-mbedtls kmod-wireguard luci-app-sqm kmod-sched-cake \
                    kmod-tun kmod-usb-storage block-mount; do
             grep -q "^CONFIG_PACKAGE_$p=y" .config || { echo "missing $p"; exit 1; }
           done
@@ -148,11 +129,11 @@ jobs:
         run: |
           cd openwrt
           R=$(ls -d build_dir/target-*/root-qualcommbe* | head -1)
-          ls -la $R/lib/firmware/ath12k/QCN9274/hw2.0/ $R/lib/firmware/ath11k/IPQ9574/hw1.0/ || true
+          ls -la $R/lib/firmware/ath12k/QCN9274/hw2.0/ $R/lib/firmware/IPQ9574/ || true
           md5sum $R/lib/firmware/ath12k/QCN9274/hw2.0/firmware-2.bin
           echo "$FW_MD5  $(ls $R/lib/firmware/ath12k/QCN9274/hw2.0/firmware-2.bin)" | md5sum -c -
-          echo "$Q6_SHA256  $(ls $R/lib/firmware/ath11k/IPQ9574/hw1.0/q6_fw.mdt)" | sha256sum -c -
-          test -f $R/lib/firmware/ath11k/IPQ9574/hw1.0/q6_fw.b13
+          test -f $R/lib/firmware/IPQ9574/q6_fw.mdt
+          test -f $R/lib/firmware/IPQ9574/m3_fw.mdt
           test -x $R/usr/sbin/nlbwmon
           test -n "$(find $R/lib/modules -name 'nf_conntrack_netlink.ko')"
           test -n "$(find $R/lib/modules -name 'wireguard.ko')"

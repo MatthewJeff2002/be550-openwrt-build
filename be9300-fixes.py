@@ -21,6 +21,7 @@ dst = os.path.join(ow, "package/kernel/mac80211/patches/ath12k")
 for p in sorted(glob.glob("patches/mac80211-ath12k/*.patch")):
     target = os.path.join(dst, os.path.basename(p))
     if os.path.exists(target):
-        sys.exit(f"patch name collision: {target}")
+        print("mac80211: already in tree, keeping upstream copy of", os.path.basename(p))
+        continue
     shutil.copy(p, target)
     print("mac80211: added", os.path.basename(p))
