@@ -88,13 +88,14 @@ jobs:
           cp "$M" "$W" ../out/
           find bin -name 'kmod-ath12k*' -exec cp {} ../out/ \; 2>/dev/null || true
           cd ../out
-          for m in *.ko; do echo "== $m"; strings $m | grep -E '^vermagic=|^parm=force_dualmac|^name='; done
-          strings ath12k.ko | grep -q 'parm=force_dualmac'
+          for m in *.ko; do echo "== $m"; strings $m | grep -E '^vermagic=|^parmtype=|^name='; done
+          strings ath12k.ko | grep -q '^parmtype=force_dualmac:bool'
           sha256sum *.ko > sha256sums.txt
           if [ "$VM" = "$ROUTER_VERMAGIC" ]; then echo MATCH > match.txt; else echo "MISMATCH $VM" > match.txt; fi
           cat match.txt
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ath12k-hotswap
           path: out/
