@@ -7,6 +7,7 @@ on:
       - 'README.md'
       - '.github/workflows/release.yml'
       - '.github/workflows/kmod-ath12k.yml'
+      - '.github/workflows/kmod-cake.yml'
       - 'router-match.diffconfig'
   workflow_dispatch:
 
